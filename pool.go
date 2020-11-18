@@ -84,9 +84,11 @@ func (p *Pool) get(timeout time.Duration) *client {
 	default:
 	}
 
+	p.mut.Lock()
 	if p.created < p.max {
 		p.makeOne()
 	}
+	p.mut.Unlock()
 
 	var deadline <-chan time.Time
 	if timeout >= 0 {
@@ -142,10 +144,6 @@ func (p *Pool) replace(c *client) {
 }
 
 func (p *Pool) inc() bool {
-	if p.created >= p.max {
-		return false
-	}
-
 	p.mut.Lock()
 	defer p.mut.Unlock()
 
