@@ -1,6 +1,7 @@
 package email
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -14,6 +15,7 @@ import (
 )
 
 type Pool struct {
+	NetTimeOut    time.Duration
 	addr          string
 	auth          smtp.Auth
 	max           int
@@ -46,13 +48,14 @@ var (
 
 func NewPool(address string, count int, auth smtp.Auth, opt_tlsConfig ...*tls.Config) (pool *Pool, err error) {
 	pool = &Pool{
-		addr:    address,
-		auth:    auth,
-		max:     count,
-		clients: make(chan *client, count),
-		rebuild: make(chan struct{}),
-		closing: make(chan struct{}),
-		mut:     &sync.Mutex{},
+		NetTimeOut: time.Second * 3,
+		addr:       address,
+		auth:       auth,
+		max:        count,
+		clients:    make(chan *client, count),
+		rebuild:    make(chan struct{}),
+		closing:    make(chan struct{}),
+		mut:        &sync.Mutex{},
 	}
 	if len(opt_tlsConfig) == 1 {
 		pool.tlsConfig = opt_tlsConfig[0]
@@ -80,7 +83,11 @@ func (p *Pool) SetHelloHostname(h string) {
 func (p *Pool) get(timeout time.Duration) *client {
 	select {
 	case c := <-p.clients:
-		return c
+		if err := c.Noop(); err != nil {
+			c.Close()
+		} else {
+			return c
+		}
 	default:
 	}
 
@@ -98,7 +105,11 @@ func (p *Pool) get(timeout time.Duration) *client {
 	for {
 		select {
 		case c := <-p.clients:
-			return c
+			if err := c.Noop(); err != nil {
+				c.Close()
+			} else {
+				return c
+			}
 		case <-p.rebuild:
 			p.makeOne()
 		case <-deadline:
@@ -203,7 +214,16 @@ func addAuth(c *client, auth smtp.Auth) (bool, error) {
 }
 
 func (p *Pool) build() (*client, error) {
-	cl, err := smtp.Dial(p.addr)
+	dialer := net.Dialer{Timeout: p.NetTimeOut, KeepAlive: 2 * time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), p.NetTimeOut)
+	conn, err := dialer.DialContext(ctx, "tcp", p.addr)
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	host, _, _ := net.SplitHostPort(p.addr)
+
+	cl, err := smtp.NewClient(conn, host)
 	if err != nil {
 		return nil, err
 	}
